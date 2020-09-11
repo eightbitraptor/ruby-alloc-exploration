@@ -1,0 +1,236 @@
+---
+title: "Ruby Allocation Analysis"
+author: "Matt Valentine-House"
+date: "07/09/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warnings=FALSE, fig.width = 9, fig.height = 7)
+
+r <- getOption("repos")
+r["CRAN"] <- "https://www.stats.bris.ac.uk/R/"
+options(repos = r)
+
+if (!requireNamespace('tidyverse'))
+  install.packages('tidyverse')
+
+if (!requireNamespace('ggplot2'))
+  install.packages('ggplot2')
+
+library(ggplot2)
+library(tidyverse)
+
+
+options(scipen=999)
+
+addUnits <- function(n) {
+  labels <- ifelse(n < 1000, n,  # less than thousands
+                   ifelse(n < 1e6, paste0(round(n/1e3), 'k'),  # in thousands
+                          ifelse(n < 1e9, paste0(round(n/1e6), 'M'),  # in millions
+                                 ifelse(n < 1e12, paste0(round(n/1e9), 'B'), # in billions
+                                        ifelse(n < 1e15, paste0(round(n/1e12), 'T'), # in trillions
+                                               'too big!')))))
+  return(labels)
+}
+
+```
+
+## Gathering data for malloc usage in a Ruby program
+
+Using `malloc_history` on macOS we can analyse and record calls to malloc family
+functions during execution of a program. This works by setting an environment
+variable that instructs the malloc library to log all allocations when your
+target program is run.
+
+Once malloc is logging all allocations we can then attach to the target process
+and dump the allocation data to a file.
+
+In this example I am dumping all the allocations made during the bootup process
+of Shopify core. In order to do this I first had to disable spring, and then
+start the application. I started it using `rails/runner` with the command string
+`puts Process.pid; $stdin.gets` in order to only boot the application and then
+wait.
+
+```{eval=FALSE}
+# disable spring
+spring stop
+./bin/spring binstubs --remove --all
+
+# start the application and wait
+MallocStackLoggingNoCompact=1 ./bin/rails runner 'puts Process.pid; $stdin.gets'
+```
+
+We use `MallocStackLoggingNoCompact` instead of `MallocStackLogging` to ensure
+that the `malloc_history` tool keeps all allocation information, even for small
+or short lived allocations.
+
+Next we can use `malloc_history` to read the data and extract the relevant
+information to a log file:
+
+```
+malloc_history -allBySize <pid> > malloc.log
+```
+
+Information about macOS's built in malloc debugging tools can be found in the
+[Apple documentation
+archive](https://developer.apple.com/library/archive/documentation/Performance/Conceptual/ManagingMemory/Articles/MallocDebug.html)
+
+## Processing the data for display
+
+The log files that `malloc_history` outputs aren't the most readable. The data
+is in the following format
+
+```
+1 call for 8192 bytes: 0x7fff71d59cc9 (libdyld.dylib) start | 0x10e04e434 (ruby) main | 0x7fff43f75587 (libruby.2.6.dylib) ruby_init | 0x7fff43f75552 (libruby.2.6.dylib) ruby_setup | 0x7fff43f9323d (libruby.2.6.dylib) rb_call_inits | 0x7fff43f70e50 (libruby.2.6.dylib) Init_Exception | 0x7fff43f34e27 (libruby.2.6.dylib) rb_define_class | 0x7fff44054f0b (libruby.2.6.dylib) rb_intern3 | 0x7fff44056097 (libruby.2.6.dylib) ??? | 0x7fff44055359 (libruby.2.6.dylib) ??? | 0x7fff43f19e2a (libruby.2.6.dylib) rb_ary_tmp_new | 0x7fff43f19b5e (libruby.2.6.dylib) ??? | 0x7fff43f84e3b (libruby.2.6.dylib) ??? | 0x7fff71f0fcf5 (libsystem_malloc.dylib) malloc | 0x7fff71f0fd9e (libsystem_malloc.dylib) malloc_zone_malloc
+```
+
+We can use the following Ruby program to parse the raw log data and turn it
+into a CSV containing allocations grouped by size, and also containing caller
+information for each group
+
+```{ruby, code=xfun::read_utf8('process_malloc.rb'), eval=FALSE}
+```
+
+Now we can load that data into R
+
+```{r allocations}
+allocations <- read_csv('allocation_data.csv')
+```
+
+## Exploring the data
+
+```{r}
+allocations
+```
+
+In total this code makes `r sum(allocations$count)` calls to malloc. Let's take a look at what functions are calling malloc most frequently
+
+```{r}
+sorted_callers <- allocations %>%
+  group_by(caller) %>%
+  summarise(
+    median_bytes = median(bytes_requested),
+    mean_bytes = sprintf("%.3f", mean(bytes_requested)),
+    min_bytes = min(bytes_requested),
+    max_bytes = max(bytes_requested),
+    count = sum(count)
+  ) %>%
+  arrange(desc(count))
+
+sorted_callers
+```
+
+Let's exclude some of the results that we know we're not interested in because they're large allocations made as part of the VM initialisation.
+
+```{r}
+filtered_allocations <- allocations %>%
+  filter(!caller %in% c(
+    "Init_TransientHeap",
+    "transient_heap_block_alloc",
+    "fiber_pool_allocate_memory",
+    "fiber_pool_expand",
+    "Init_BareVM",
+    "dln_load",
+    "rb_thread_create_timer_thread"))
+```
+
+Let's sort the remaining allocations into bins based on how many RVALUES they
+would take up. The first bin will be everything that can be represented by one
+RVALUE, ie. < 40 bytes. The next bins will be 10 RVALUES wide, and finally the
+last bin will be everything that is a whole Ruby heap page or larger. This will
+give us an idea of what our memory allocation will look like in a world where we
+are trying to allocate everything on the Ruby GC heap.
+
+- 0-40 bytes: 1 RVALUE
+- 41-400 bytes: 2-10 RVALUES
+- 401-800 bytes: 11-20 RVALUES
+- 801-1200 bytes: 21-30 RVALUES
+- ... (skipped for brevity)
+- 15601-1600: 390 - 400 RVALUES
+- 16001 - 16320: 401 - 408 RVALUES (This is the page boundary)
+- 16320+: all these allocations are larger than an entire page of the Ruby GC heap
+
+Let's visualise the total count of allocations in each of the bins
+
+```{r}
+bins <- c(-Inf, 40, seq(from = 400, to = 16320, by = 400), 16320, Inf)
+labels <- c("<1", sprintf("<%d", seq(from = 10, to = 400, by = 10)), "<408", ">408")
+
+filtered_allocations <- filtered_allocations %>%
+  mutate(request_size_bin = cut(bytes_requested, breaks = bins, labels = labels))
+
+
+grouped_allocations <- filtered_allocations %>%
+  group_by(request_size_bin) %>%
+  summarise(count = sum(count))
+
+ggplot(grouped_allocations, aes(x = count, y = request_size_bin)) +
+  geom_point(size=1) +
+  geom_segment(aes(y=request_size_bin, yend=request_size_bin, x=0, xend=count)) +
+  geom_text(aes(label=count, x=(max(count)/90 + count)), hjust=0, size=2) +
+  labs(title = "Allocation counts binned by RVALUE multiples", y = "Requested allocation size, by RVALUE", x = "quantity") +
+  scale_x_continuous(labels = addUnits)
+  
+  
+```
+
+## Looking closer at allocations greater than a page length
+
+```{r}
+large_allocations <- filtered_allocations %>%
+  filter(bytes_requested > 16 * 1024) %>%
+  group_by(caller)
+
+ggplot(large_allocations, aes(x = bytes_requested, y = caller)) +
+  geom_boxplot(coef=25) +
+  scale_x_continuous(labels = addUnits) +
+  theme(axis.text.y = element_text(hjust=0))
+```
+
+```{r}
+grouped_large_allocations <- large_allocations %>%
+  select(c('count', 'caller')) %>%
+  group_by(caller) %>%
+  summarise(count = sum(count))
+
+ggplot(grouped_large_allocations, aes(x = count, y = reorder(caller, count))) +
+  geom_bar(stat = "identity") +
+    theme(axis.text.y = element_text(hjust=0))
+```
+
+And the same, but with some of the outlier allocations (ie over 2M bytes) removed
+
+```{r}
+
+small_large_allocations <- large_allocations %>%
+  filter(bytes_requested < 5000000)
+
+ggplot(small_large_allocations, aes(x = bytes_requested, y = reorder(caller, bytes_requested, FUN = median))) +
+  geom_boxplot(coef=20) +
+  scale_x_continuous(labels = addUnits) +
+  #coord_cartesian(xlim = xlim2*1.05) +
+  theme(axis.text.y = element_text(hjust=0))
+
+```
+
+## Looking at allocations that are <100 RVALUES
+
+```{r}
+small_allocations <- filtered_allocations %>%
+  filter(bytes_requested < 100 * 40) %>%
+  group_by(caller) %>%
+  select(c('bytes_requested', 'caller'))
+
+ggplot(small_allocations, aes(x = bytes_requested, y = reorder(caller, bytes_requested, FUN = median))) +
+  geom_boxplot(coef = 50) +
+  scale_x_continuous(labels = addUnits) +
+  theme(axis.text.y = element_text(hjust=0))
+```
+
+
+## R Versions and libraries used
+
+```{r}
+sessionInfo()
+```
