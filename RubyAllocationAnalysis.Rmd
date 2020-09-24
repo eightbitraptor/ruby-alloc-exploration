@@ -6,7 +6,7 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warnings=FALSE, fig.width = 9, fig.height = 7)
+knitr::opts_chunk$set(echo = FALSE, warnings=FALSE, fig.width = 10, fig.height = 8)
 
 r <- getOption("repos")
 r["CRAN"] <- "https://www.stats.bris.ac.uk/R/"
@@ -22,14 +22,14 @@ library(ggplot2)
 library(tidyverse)
 
 
-options(scipen=999)
+options(scipen=999, dplyr.summarise.inform = FALSE)
 
 addUnits <- function(n) {
   labels <- ifelse(n < 1000, n,  # less than thousands
-                   ifelse(n < 1e6, paste0(round(n/1e3), 'k'),  # in thousands
-                          ifelse(n < 1e9, paste0(round(n/1e6), 'M'),  # in millions
-                                 ifelse(n < 1e12, paste0(round(n/1e9), 'B'), # in billions
-                                        ifelse(n < 1e15, paste0(round(n/1e12), 'T'), # in trillions
+                   ifelse(n < 1e6, paste0(round(n/1e3, digits=1), 'k'),  # in thousands
+                          ifelse(n < 1e9, paste0(round(n/1e6, digits=1), 'M'),  # in millions
+                                 ifelse(n < 1e12, paste0(round(n/1e9, digits=1), 'B'), # in billions
+                                        ifelse(n < 1e15, paste0(round(n/1e12, digits=1), 'T'), # in trillions
                                                'too big!')))))
   return(labels)
 }
@@ -89,20 +89,16 @@ We can use the following Ruby program to parse the raw log data and turn it
 into a CSV containing allocations grouped by size, and also containing caller
 information for each group
 
-```{ruby, code=xfun::read_utf8('process_malloc.rb'), eval=FALSE}
+```{ruby, code=xfun::read_utf8('process_malloc.rb'), eval=FALSE, echo = TRUE}
 ```
 
 Now we can load that data into R
 
-```{r allocations}
+```{r message = FALSE}
 allocations <- read_csv('allocation_data.csv')
 ```
 
 ## Exploring the data
-
-```{r}
-allocations
-```
 
 In total this code makes `r sum(allocations$count)` calls to malloc. Let's take a look at what functions are calling malloc most frequently
 
@@ -114,9 +110,8 @@ sorted_callers <- allocations %>%
     mean_bytes = sprintf("%.3f", mean(bytes_requested)),
     min_bytes = min(bytes_requested),
     max_bytes = max(bytes_requested),
-    count = sum(count)
-  ) %>%
-  arrange(desc(count))
+    count = n()
+  )
 
 sorted_callers
 ```
@@ -160,10 +155,9 @@ labels <- c("<1", sprintf("<%d", seq(from = 10, to = 400, by = 10)), "<408", ">4
 filtered_allocations <- filtered_allocations %>%
   mutate(request_size_bin = cut(bytes_requested, breaks = bins, labels = labels))
 
-
 grouped_allocations <- filtered_allocations %>%
   group_by(request_size_bin) %>%
-  summarise(count = sum(count))
+  summarise(count = n())
 
 ggplot(grouped_allocations, aes(x = count, y = request_size_bin)) +
   geom_point(size=1) +
@@ -171,63 +165,120 @@ ggplot(grouped_allocations, aes(x = count, y = request_size_bin)) +
   geom_text(aes(label=count, x=(max(count)/90 + count)), hjust=0, size=2) +
   labs(title = "Allocation counts binned by RVALUE multiples", y = "Requested allocation size, by RVALUE", x = "quantity") +
   scale_x_continuous(labels = addUnits)
-  
-  
 ```
 
 ## Looking closer at allocations greater than a page length
 
 ```{r}
-large_allocations <- filtered_allocations %>%
-  filter(bytes_requested > 16 * 1024) %>%
+total_large_allocs <- filtered_allocations %>%
+  filter(request_size_bin %in% c('>408'))
+
+perc <- count(total_large_allocs) / count(filtered_allocations)
+```
+
+We can see that allocations that are larger than 408 RVALUES (ie. 1 heap page) are `r sprintf("%1.2f%%", perc * 100)` of the total number of allocations
+
+```{r}
+large_allocations <- total_large_allocs %>%
   group_by(caller)
 
-ggplot(large_allocations, aes(x = bytes_requested, y = caller)) +
+ggplot(large_allocations, aes(x = bytes_requested, y = reorder(caller, bytes_requested, FUN=median))) +
   geom_boxplot(coef=25) +
   scale_x_continuous(labels = addUnits) +
-  theme(axis.text.y = element_text(hjust=0))
+  theme(axis.text.y = element_text(hjust=0)) + 
+  labs(title = "Size of allocations greater than 1 heap page", y = "Caller", x = "Bytes requested, ordered by Median")
+
 ```
+And the same, but with some of the outlier allocations (ie over 2M bytes) removed
+
+```{r}
+small_large_allocations <- large_allocations %>%
+  filter(bytes_requested < 5000000)
+
+ggplot(small_large_allocations, aes(x = bytes_requested, y = reorder(caller, bytes_requested, FUN = median))) +
+  geom_boxplot(coef=25) +
+  scale_x_continuous(labels = addUnits) +
+  theme(axis.text.y = element_text(hjust=0)) + 
+  labs(title = "Size of allocations greater than 1 heap page", y = "Caller", x = "Bytes requested, ordered by Median")
+
+```
+
+Looking at the source of the most frequent large allocations
 
 ```{r}
 grouped_large_allocations <- large_allocations %>%
-  select(c('count', 'caller')) %>%
   group_by(caller) %>%
-  summarise(count = sum(count))
+  summarise(count = n())
 
 ggplot(grouped_large_allocations, aes(x = count, y = reorder(caller, count))) +
   geom_bar(stat = "identity") +
     theme(axis.text.y = element_text(hjust=0))
 ```
 
-And the same, but with some of the outlier allocations (ie over 2M bytes) removed
+
+## Looking at allocations that are <40 RVALUES
 
 ```{r}
+total_small_allocs <- filtered_allocations %>%
+  filter(request_size_bin %in% c('<30', '<10', '<1'))
 
-small_large_allocations <- large_allocations %>%
-  filter(bytes_requested < 5000000)
-
-ggplot(small_large_allocations, aes(x = bytes_requested, y = reorder(caller, bytes_requested, FUN = median))) +
-  geom_boxplot(coef=20) +
-  scale_x_continuous(labels = addUnits) +
-  #coord_cartesian(xlim = xlim2*1.05) +
-  theme(axis.text.y = element_text(hjust=0))
-
+perc <- count(total_small_allocs) / count(filtered_allocations)
 ```
 
-## Looking at allocations that are <100 RVALUES
+We can see that allocations that are smaller than 40 RVALUES are `r sprintf("%1.2f%%", perc * 100)` of the total number of allocations
 
-```{r}
-small_allocations <- filtered_allocations %>%
-  filter(bytes_requested < 100 * 40) %>%
+```{r fig.height=10}
+small_allocations <- total_small_allocs %>%
   group_by(caller) %>%
   select(c('bytes_requested', 'caller'))
 
 ggplot(small_allocations, aes(x = bytes_requested, y = reorder(caller, bytes_requested, FUN = median))) +
-  geom_boxplot(coef = 50) +
+  geom_boxplot(coef = 12) +
   scale_x_continuous(labels = addUnits) +
-  theme(axis.text.y = element_text(hjust=0))
+  #scale_y_continuous(breaks=seq(0,1200,40)) +
+  theme(axis.text.y = element_text(hjust=0)) + 
+  labs(title = "Size of allocations smaller than 30 RVALUES (1200 bytes)", y = "Caller", x = "Bytes requested, ordered by Median")
+
 ```
 
+There aren't really many outliers that are worth cutting off in this case, we can see that several functions have reasonable ranges of allocations that take up nearly the whole range between 1 and 40 RVALUES worth. Let's move on to looking at call counts
+
+```{r fig.height = 10}
+grouped_small_allocations <- total_small_allocs %>%
+  group_by(caller) %>%
+  summarise(count = n())
+
+ggplot(grouped_small_allocations, aes(x = count, y = reorder(caller, count))) +
+  geom_bar(stat = "identity") +
+    theme(axis.text.y = element_text(hjust=0))
+```
+
+## Heap page allocate. I am confused to see `heap_page_allocate` in these allocation charts. `heap_page_allocate` allocates memory in 2 places:
+
+```{c eval=FALSE}
+    page_body = (struct heap_page_body *)rb_aligned_malloc(HEAP_PAGE_ALIGN, HEAP_PAGE_SIZE);
+```
+
+This is when the page body is allocated, and is always `HEAP_PAGE_SIZE` bytes. So this shouldn't vary.
+
+The other places malloc is used is here:
+
+```{c eval=FALSE}
+  page = calloc1(sizeof(struct heap_page))
+```
+
+As we can see this is also called with a constant size which is the size of the `heap_page` struct.
+
+Let's take a look at just the data pertaining to `heap_page_allocate`
+
+```{r}
+
+heap_page_allocate <- filtered_allocations %>%
+  filter(caller == 'heap_page_allocate')
+
+ggplot(heap_page_allocate, aes(x = request_size_bin)) + 
+  geom_bar()
+```
 
 ## R Versions and libraries used
 
