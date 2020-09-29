@@ -1,7 +1,7 @@
 ---
 title: "Ruby Allocation Analysis"
 author: "Matt Valentine-House"
-date: "07/09/2020"
+date: "29/09/2020"
 output: html_document
 ---
 
@@ -295,6 +295,22 @@ small_callers_dist_upper_quartile <- small_callers_dist %>%
   arrange(desc(count))
 
 bar_chart(small_callers_dist_upper_quartile, aes(y = count, x = reorder(caller, count)), xlab = "caller", title = "Small allocations by caller (above 50% percentile value")
+```
+
+## most allocations that are constant size
+
+```{r}
+constant_size_allocations <- allocs %>%
+  group_by(caller) %>%
+  summarise(
+    bytes_requested = n_distinct(bytes_requested),
+    count = n()
+  ) %>%
+  filter(bytes_requested == 1) %>%
+  arrange(desc(count))
+
+kable(constant_size_allocations)
+```
 
 # R Versions and libraries used
 
