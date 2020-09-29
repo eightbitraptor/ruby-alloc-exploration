@@ -13,31 +13,50 @@ csv << %w{
   caller
 }
 
-counter = 0
-stack = []
-entry = []
+
+def reset
+  @counter = 0
+  @stack = []
+  @entry = []
+end
+reset
+
+trace_regex = /(?<library>\S*)`(?<method>\S*)\+?/
 
 ARGF.each_with_object([]) do |line, dtrace_entry|
   line.strip!
 
   if line.empty?
-    entry << stack.find { |frame|
-      frame.start_with?("ruby")
-    }&.split('`')&.last&.split('+')&.first
-    csv << entry
+    @stack = @stack.map do |frame|
+      x = frame.split('`')
+      x[1] = x[1].split('+')[0]
+      x
+    end
 
-    stack = []
-    counter = 0
-    entry = []
+    if @stack[1].first != "ruby"
+      $stderr.puts "#@stack"
+      reset
+      next
+    else
+      @entry << @stack.find do |lib, meth|
+        lib == "ruby" &&
+        !(meth.include?("malloc") ||
+        meth.include?("calloc") ||
+        meth.include?("xrealloc"))
+      end.last
+    end
 
+    csv << @entry
+
+    reset
     next
   end
 
-  if counter < 3
-    entry << line
-    counter += 1
+  if @counter < 3
+    @entry << line
+    @counter += 1
   else
-    stack << line
+    @stack << line
   end
 end
 

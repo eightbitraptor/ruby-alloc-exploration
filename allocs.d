@@ -20,3 +20,12 @@ pid$target::reallocf:entry
   ustack();
   printf("\n");
 }
+
+pid$target::posix_memalign:entry
+{
+    printf("%s\n", probefunc);
+    printf("%i\n", timestamp);
+    printf("%i", arg2);
+    ustack();
+    printf("\n");
+}
