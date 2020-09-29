@@ -17,14 +17,17 @@ in this repo. For a Rails application running under a custom build of Ruby this
 might look like:
 
 ```
-sudo dtrace -x bufsize=50m -s ~/allocs.d -c "/Users/mattvh/src/ruby/ruby/ruby ./bin/rails runner 'Rails.env'" -o dtrace.out
+sudo dtrace -x bufsize=50m -s ~/allocs.d -c "/Users/mattvh/.rubies/trunk/bin/ruby -e 'String.new'" -o dtrace.out
 ```
 
-*NOTES:*
+[The example report](RubyAllocationAnalysis.html) was built using the command
+above on my computer
 
-- For macOS, if you're not using a custom built Ruby, you may need to open a
-  hole in System Integrity Protection in order for `dtrace` to work properly,
-  this is because most Ruby binstubs use `/usr/bin/env` to find the correct Ruby
+_NOTES:_
+
+- For macOS, dependin on what you're executing, you may need to open a hole in
+  System Integrity Protection in order for `dtrace` to work properly, this is
+  because most Ruby binstubs use `/usr/bin/env` to find the correct Ruby
   interpreter. This is because `/usr/bin/env` is a restricted binary.
 
   You can find out if a binary is restricted with `ls -lO /path/to/bin`
@@ -35,6 +38,7 @@ sudo dtrace -x bufsize=50m -s ~/allocs.d -c "/Users/mattvh/src/ruby/ruby/ruby ./
   ```
   csrutil disable && csrutil enable --without dtrace
   ```
+
 - You may need to adjust the buffersize depending on your system and how many
   times the application that you're running fires it's probes. If you're
   `dtrace` reports Drops:
