@@ -4,7 +4,7 @@ require 'csv'
 
 start_processing = false
 
-csv = CSV.open('allocation_data.csv', 'wb')
+csv = CSV.open(ARGV.shift, 'wb')
 
 csv << %w{
   allocator
@@ -33,8 +33,7 @@ ARGF.each_with_object([]) do |line, dtrace_entry|
       x
     end
 
-    if @stack[1].first != "ruby"
-      $stderr.puts "#@stack"
+    if @stack.empty? || @stack[1].first != "ruby"
       reset
       next
     else

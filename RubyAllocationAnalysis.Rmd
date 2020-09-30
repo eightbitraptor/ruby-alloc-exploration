@@ -3,6 +3,8 @@ title: "Ruby Allocation Analysis"
 author: "Matt Valentine-House"
 date: "29/09/2020"
 output: html_document
+params:
+  datafile: allocation_data.csv
 ---
 
 <style type="text/css">
@@ -13,14 +15,12 @@ output: html_document
 }
 </style>
 
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
   echo = FALSE,
   warnings=FALSE,
   fig.width = 14,
   fig.height = 8,
-  fig.retina = 2,
   out.width = "100%"
 )
 
@@ -97,7 +97,7 @@ caller_grouped_percentage <- function(caller_grouped_allocations, base) {
     filter(percentage >= "1.00%")
 }
 
-all_allocations <- read_csv('allocation_data.csv')
+all_allocations <- read_csv(params$datafile)
 
 allocs <- all_allocations %>%
   filter(!allocator %in% c('realloc', 'reallocf'))
@@ -107,6 +107,8 @@ reallocs <- all_allocations %>%
 ```
 
 # Data Summary
+
+**Data collected from: `r params$datafile`**
 
 ```{r}
 total_count <- count(all_allocations)$n
@@ -154,7 +156,6 @@ kable(bin_grouped_percentages, align = "r", caption = "percentage of calls by re
 ```
 
 ## Allocations larger than a heap page (>408 RVALUES)
-
 
 ```{r}
 total_large_allocs <- filtered_allocations %>%
