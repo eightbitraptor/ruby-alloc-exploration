@@ -4,7 +4,7 @@ author: "Matt Valentine-House"
 date: "29/09/2020"
 output: html_document
 params:
-  datafile: allocation_data.csv
+  ruby_version: 3.0.0dev
 ---
 
 <style type="text/css">
@@ -37,8 +37,12 @@ if (!requireNamespace('ggplot2'))
 if(!requireNamespace('knitr'))
   install.packages('knitr')
 
+if(!requireNamespace('glue'))
+  install.packages('glue')
+
 library(ggplot2)
 library(tidyverse)
+library(glue)
 library(knitr)
 
 options(scipen=999, dplyr.summarise.inform = FALSE)
@@ -97,7 +101,14 @@ caller_grouped_percentage <- function(caller_grouped_allocations, base) {
     filter(percentage >= "1.00%")
 }
 
-all_allocations <- read_csv(params$datafile)
+files <- list.files(path = "out",
+                    pattern = glue("*{params$ruby_version}.csv"), 
+                    full.names = T)
+
+all_allocations <-
+  files %>% 
+  map_df(~read_csv(., col_types = cols(.default = "c"))) %>%
+  mutate(bytes_requested = as.numeric(bytes_requested))  
 
 allocs <- all_allocations %>%
   filter(!allocator %in% c('realloc', 'reallocf'))
@@ -108,7 +119,11 @@ reallocs <- all_allocations %>%
 
 # Data Summary
 
-**Data collected from: `r params$datafile`**
+**Data collected from:**
+
+```{r}
+kable(files)
+```
 
 ```{r}
 total_count <- count(all_allocations)$n
@@ -155,30 +170,6 @@ kable(caller_grouped_percentages, align = "r", caption = "percentage of calls by
 kable(bin_grouped_percentages, align = "r", caption = "percentage of calls by request size bin (above 1% of all allocations)")
 ```
 
-## Allocations larger than a heap page (>408 RVALUES)
-
-```{r}
-total_large_allocs <- filtered_allocations %>%
-  filter(request_size_bin %in% c('>408'))
-```
-
-**Total as percentage of allocations: `r as_perc(count(total_large_allocs)$n / alloc_count)`**
-
-```{r}
-large_callers_percs <- group_sum_caller(total_large_allocs) %>%
-  mutate(
-    percentage_of_allocs = as_perc(count / alloc_count),
-    percentage_of_large_allocs = as_perc(count / count(total_large_allocs)$n))
-
-kable(large_callers_percs, align = "r", caption = "Callers who request more than 408 RVALUES, as a percentage of all allocations")
-```
-
-```{r}
-large_callers_dist <- group_sum_caller(total_large_allocs)
-
-bar_chart(large_callers_dist, aes(y = count, x = reorder(caller, count)), xlab = "caller", title = "Large allocations by caller")
-```
-
 ## Allocations smaller than 20 RVALUES
 
 ```{r}
@@ -213,6 +204,31 @@ small_callers_dist_upper_quartile <- small_callers_dist %>%
 bar_chart(small_callers_dist_upper_quartile, aes(y = count, x = reorder(caller, count)), xlab = "caller", title = "Small allocations by caller (above 50% percentile value")
 ```
 
+## Allocations larger than a heap page (>408 RVALUES)
+
+```{r}
+total_large_allocs <- filtered_allocations %>%
+  filter(request_size_bin %in% c('>408'))
+```
+
+**Total as percentage of allocations: `r as_perc(count(total_large_allocs)$n / alloc_count)`**
+
+```{r}
+large_callers_percs <- group_sum_caller(total_large_allocs) %>%
+  mutate(
+    percentage_of_allocs = as_perc(count / alloc_count),
+    percentage_of_large_allocs = as_perc(count / count(total_large_allocs)$n))
+
+kable(large_callers_percs, align = "r", caption = "Callers who request more than 408 RVALUES, as a percentage of all allocations")
+```
+
+```{r}
+large_callers_dist <- group_sum_caller(total_large_allocs)
+
+bar_chart(large_callers_dist, aes(y = count, x = reorder(caller, count)), xlab = "caller", title = "Large allocations by caller")
+```
+
+
 # Reallocations
 
 ## Count of reallocations binned by RVALUE size and caller
@@ -240,29 +256,6 @@ kable(caller_grouped_percentages, align = "r", caption = "percentage of calls by
 kable(bin_grouped_percentages, align = "r", caption = "percentage of calls by request size bin (above 1% of all reallocations)")
 ```
 
-## Reallocations larger than a heap page (>408 RVALUES)
-
-```{r}
-total_large_reallocs <- filtered_allocations %>%
-  filter(request_size_bin %in% c('>408'))
-```
-
-**Total as percentage of reallocations: `r as_perc(count(total_large_reallocs)$n / realloc_count)`**
-
-```{r}
-large_callers_percs <- group_sum_caller(total_large_reallocs) %>%
-  mutate(
-    percentage_of_reallocs = as_perc(count / alloc_count),
-    percentage_of_large_reallocs = as_perc(count / count(total_large_reallocs)$n))
-
-kable(large_callers_percs, align = "r", caption = "Callers who request more than 408 RVALUES, as a percentage of all allocations")
-```
-
-```{r}
-large_callers_dist <- group_sum_caller(total_large_reallocs)
-
-bar_chart(large_callers_dist, aes(y = count, x = reorder(caller, count)), xlab = "caller", title = "Large allocations by caller")
-```
 
 ## Reallocations smaller than 20 RVALUES
 
@@ -298,19 +291,78 @@ small_callers_dist_upper_quartile <- small_callers_dist %>%
 bar_chart(small_callers_dist_upper_quartile, aes(y = count, x = reorder(caller, count)), xlab = "caller", title = "Small allocations by caller (above 50% percentile value")
 ```
 
-## most allocations that are constant size
+## Reallocations larger than a heap page (>408 RVALUES)
 
 ```{r}
+total_large_reallocs <- filtered_allocations %>%
+  filter(request_size_bin %in% c('>408'))
+```
+
+**Total as percentage of reallocations: `r as_perc(count(total_large_reallocs)$n / realloc_count)`**
+
+```{r}
+large_callers_percs <- group_sum_caller(total_large_reallocs) %>%
+  mutate(
+    percentage_of_reallocs = as_perc(count / alloc_count),
+    percentage_of_large_reallocs = as_perc(count / count(total_large_reallocs)$n))
+
+kable(large_callers_percs, align = "r", caption = "Callers who request more than 408 RVALUES, as a percentage of all allocations")
+```
+
+```{r}
+large_callers_dist <- group_sum_caller(total_large_reallocs)
+
+bar_chart(large_callers_dist, aes(y = count, x = reorder(caller, count)), xlab = "caller", title = "Large allocations by caller")
+```
+
+# Constant size allocations
+
+This will give us an idea of some good targets for conversion that don't rely on us implementing reallocation.
+
+## Per test
+
+```{r results='asis'}
 constant_size_allocations <- allocs %>%
-  group_by(caller) %>%
+  group_by(caller, test_type) %>%
   summarise(
     bytes_requested = n_distinct(bytes_requested),
     count = n()
   ) %>%
   filter(bytes_requested == 1) %>%
-  arrange(desc(count))
+  arrange(desc(count)) %>%
+  group_by(test_type, .add = FALSE) %>%
+  slice_max(count, n=10) %>%
+  group_modify(~mutate(.x, id = row_number())) %>%
+  group_split()
 
-kable(constant_size_allocations)
+
+for (p in constant_size_allocations) {
+  print(kable(p %>% select(caller, count), caption = glue("Most used callers with fixed allocations in {p$test_type[1]} test")))
+}
+```
+
+# Combined and weighted top 10
+
+Weightings were calculated by summing all the counts, so giving us a number of times this caller called an allocation routine across all 4 test types and multiplying them by the number of distinct tests they appeared in, this ensuring that outliers that were called frequently in a single test didn't skew the results.
+
+I then weighted these results to take into account the various test sizes that they appeared in - because booting a Rails application is a more complex operation than printing a string, and I wanted this variance in test complexity taken into account.
+
+```{r}
+
+test_weights <- constant_size_allocations %>%
+  reduce(union) %>%
+  group_by(test_type) %>%
+  summarize(all_counts = sum(count)) %>%
+  mutate(weight = scales::rescale(all_counts, c(0.1,1)))
+  
+constant_size_weighted_allocs <- constant_size_allocations %>%
+  reduce(union) %>%
+  group_by(caller) %>%
+  summarise(
+    position = sum(count) * n_distinct(test_type) * sum(filter(test_weights, test_type=="liquid")$weight)) %>%
+  arrange(desc(position))
+
+kable(constant_size_weighted_allocs)
 ```
 
 # R Versions and libraries used

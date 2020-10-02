@@ -4,6 +4,7 @@ require 'csv'
 
 start_processing = false
 
+test_type = ARGV.shift
 csv = CSV.open(ARGV.shift, 'wb')
 
 csv << %w{
@@ -11,6 +12,7 @@ csv << %w{
   timestamp
   bytes_requested
   caller
+  test_type
 }
 
 
@@ -44,6 +46,8 @@ ARGF.each_with_object([]) do |line, dtrace_entry|
         meth.include?("xrealloc"))
       end.last
     end
+
+    @entry << test_type
 
     csv << @entry
 

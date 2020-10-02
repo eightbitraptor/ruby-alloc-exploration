@@ -8,6 +8,11 @@ vendor
 *.csv
 *.log
 *.out
+liquid
+optcarrot
+test-app
+out
+reports
 
 .RData
 .Rhistory
